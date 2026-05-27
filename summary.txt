@@ -1,3 +1,35 @@
-Fraud Detection Analysis Summary
-Developed by: JANMEJAY SINGH RATHORE
-Model: LightGBM
+====================================================
+  FRAUD DETECTION DASHBOARD — PROJECT SUMMARY
+  Author  : Janmejay Singh Rathore
+  Dataset : IEEE-CIS Fraud Detection (Kaggle)
+  Stack   : Python · Streamlit · LightGBM · scikit-learn · Plotly
+====================================================
+
+PAGES
+-----
+  Home (app.py)             — KPI metrics, overview charts, dataset preview
+  1_📊_EDA.py               — Exploratory data analysis & pattern discovery
+  2_🤖_Model_Training.py    — Train & compare LightGBM / RF / Logistic Regression
+  3_🔮_Predict.py           — Live transaction fraud scoring with SHAP-style contributions
+  4_ℹ️_About.py             — Project info, tech stack, timeline
+  5_📋_Summary.py           — Overall summarisation: dataset, leaderboard, predictions, export
+
+MODELS
+------
+  LightGBM          : ROC-AUC ~0.98  (best — used on Predict page)
+  Random Forest     : ROC-AUC ~0.95
+  Logistic Regression: ROC-AUC ~0.88 (baseline)
+
+DATASET
+-------
+  Source : Kaggle IEEE-CIS Fraud Detection
+  Full   : 590,540 transactions × 394 columns
+  Target : isFraud (binary, ~3.5% positive)
+  Demo   : 5,000-row synthetic fallback when full data unavailable
+
+DEPLOYMENT
+----------
+  Live   : https://fraudexplainableai.streamlit.app/
+  Repo   : https://github.com/JSR2406/Fraud-Detection-Dashboard-
+
+====================================================
