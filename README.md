@@ -1,6 +1,6 @@
 # 🛡️ Fraud Detection Dashboard
 
-[![Streamlit App](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://fraud-detection-dashboard-jsr.streamlit.app)
+[![Streamlit App](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://fraudexplainableai.streamlit.app/)
 
 > End-to-end machine learning dashboard for detecting financial transaction fraud using the **IEEE-CIS Fraud Detection** dataset.
 
@@ -11,7 +11,7 @@
 
 ## 🚀 Live Demo
 
-👉 **[Open on Streamlit Cloud](https://fraud-detection-dashboard-jsr.streamlit.app)**
+👉 **[Open on Streamlit Cloud](https://fraudexplainableai.streamlit.app/)**
 
 ---
 
