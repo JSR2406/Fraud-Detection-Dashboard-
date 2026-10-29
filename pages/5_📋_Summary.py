@@ -19,7 +19,19 @@ from src.styles         import inject_global_css, section_title, footer
 st.set_page_config(page_title="Summary | Fraud Detection", page_icon="📋", layout="wide")
 inject_global_css()
 
-# ── Header ────────────────────────────────────────────────────────────────────
+
+def hex_to_rgba(hex_color: str, alpha: float = 0.08) -> str:
+    """Convert a hex color such as '#6C63FF' to an rgba CSS string."""
+    hex_color = hex_color.lstrip("#")
+    if len(hex_color) == 3:
+        hex_color = "".join(ch * 2 for ch in hex_color)
+    if len(hex_color) != 6:
+        raise ValueError(f"Unsupported hex color: {hex_color}")
+    r, g, b = [int(hex_color[i:i + 2], 16) for i in (0, 2, 4)]
+    return f"rgba({r},{g},{b},{alpha})"
+
+
+# ── Header ────────────────────────────────────────────────────────────[...]
 st.markdown("""
 <div class="hero">
   <h1>📋 Project Summary</h1>
@@ -37,7 +49,7 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
-# ── Load dataset ──────────────────────────────────────────────────────────────
+# ── Load dataset ──────────────────────────────────────────────────────────[...]
 df = load_data()
 dist = get_class_distribution(df)
 total       = dist["Legitimate"] + dist["Fraud"]
@@ -225,7 +237,7 @@ else:
             name=row["Model"],
             fill="toself",
             line_color=colors_rad[i % len(colors_rad)],
-            fillcolor=colors_rad[i % len(colors_rad)].replace("#", "rgba(") + ",0.08)",
+            fillcolor=hex_to_rgba(colors_rad[i % len(colors_rad)], 0.08),
         ))
     fig_rad.update_layout(
         polar=dict(
@@ -394,7 +406,7 @@ DATASET SNAPSHOT
 
 MODEL LEADERBOARD
 -----------------
-{"  [No models trained]" if not trained else model_txt.rstrip()}
+ {"  [No models trained]" if not trained else model_txt.rstrip()}
 
 PREDICTION ACTIVITY
 -------------------
