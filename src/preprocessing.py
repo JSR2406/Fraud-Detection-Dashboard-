@@ -52,6 +52,11 @@ def preprocess(df: pd.DataFrame, fit: bool = True, encoders: dict = None):
     num_cols = _safe_cols(df, NUMERIC_FEATURES + ["hour", "day", "is_night", "log_amt", "amt_decimal"])
     cat_cols = _safe_cols(df, CAT_FEATURES)
 
+    if fit:
+        encoders["_numeric_medians"] = {}
+
+    numeric_medians = encoders.get("_numeric_medians", {})
+
     # Encode categoricals
     for col in cat_cols:
         df[col] = df[col].fillna("unknown").astype(str)
@@ -71,7 +76,15 @@ def preprocess(df: pd.DataFrame, fit: bool = True, encoders: dict = None):
     # Fill numeric NaNs
     for col in num_cols:
         if col in df.columns:
-            df[col] = df[col].fillna(df[col].median())
+            if fit:
+                median_value = df[col].median()
+                if pd.isna(median_value):
+                    median_value = 0.0
+                numeric_medians[col] = median_value
+                encoders["_numeric_medians"] = numeric_medians
+            else:
+                median_value = numeric_medians.get(col, 0.0)
+            df[col] = df[col].fillna(median_value)
 
     feature_cols = num_cols + cat_cols
     X = df[feature_cols].values
