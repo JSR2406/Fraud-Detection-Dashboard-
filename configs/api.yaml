@@ -1,0 +1,36 @@
+# Serving and monitoring configuration for scripts/serve.py and
+# scripts/monitor.py. Environment variables take precedence over these values
+# where an equivalent FRAUD_* setting exists in fraud_ml.config.
+
+server:
+  host: 0.0.0.0             # container-safe default; override with FRAUD_API_HOST
+  port: 8000                # override with FRAUD_API_PORT
+  log_level: info
+  workers: 1                # increase only with a pre-fork-compatible setup
+  reload: false             # never enable in production images
+
+app:
+  target: api.main:app      # uvicorn import string
+
+auth:
+  header: X-API-Key
+  # api.security.require_api_key returns HTTP 503 until FRAUD_API_KEY is set.
+  # Set FRAUD_API_KEY in an untracked .env file (see .env.example if present).
+
+inference:
+  max_batch_size: 500       # mirrors FRAUD_MAX_BATCH_SIZE in fraud_ml.config
+  decision_threshold: 0.5   # mirrors FRAUD_THRESHOLD; artifact threshold wins
+
+artifacts:
+  model_path: artifacts/candidate.joblib   # mirrors FRAUD_MODEL_PATH
+
+monitoring:
+  # Descriptive drift checks only -- not statistical tests or performance monitoring.
+  baseline_path: artifacts/monitoring_baseline.json
+  report_path: artifacts/monitoring_report.json
+  rate_absolute_threshold: 0.05    # fraud-rate / missing-fraction delta
+  amount_relative_threshold: 0.20  # relative change in mean / p95 amount
+  pandera: false            # opt-in; requires the optional `validation` extra
+  # fraud_ml.mlops.monitoring provides a richer reference-profile comparison;
+  # scripts/monitor.py uses the lightweight monitoring.drift helpers instead.
+  log_to_mlflow: false      # opt-in; requires the optional `mlflow` extra

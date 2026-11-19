@@ -1,17 +1,24 @@
-"""Smoke/regression tests for the dashboard's existing data and ML modules."""
+"""Smoke/regression tests for the preserved Streamlit data and ML modules.
+
+The copilot branch dropped this file; it is restored here against the explicit
+demo generator so legacy dashboard helpers remain covered. Synthetic records
+are used for software correctness only, never as performance evidence.
+"""
+from __future__ import annotations
 
 import numpy as np
 import pandas as pd
 import pytest
 
-from src.data_loader import _make_synthetic, get_class_distribution
+from fraud_ml.data.ingestion import make_demo_data
+from src.data_loader import get_class_distribution
 from src.model_trainer import train_all
 from src.preprocessing import engineer_features, preprocess
 
 
-def test_synthetic_data_is_reproducible_and_has_expected_schema():
-    first = _make_synthetic(n=800, seed=7)
-    second = _make_synthetic(n=800, seed=7)
+def test_demo_data_is_reproducible_and_has_expected_schema() -> None:
+    first = make_demo_data(rows=800, seed=7)
+    second = make_demo_data(rows=800, seed=7)
 
     pd.testing.assert_frame_equal(first, second)
     assert len(first) == 800
@@ -21,12 +28,12 @@ def test_synthetic_data_is_reproducible_and_has_expected_schema():
     assert (first["TransactionAmt"] >= 0).all()
 
 
-def test_class_distribution_counts_both_classes():
+def test_class_distribution_counts_both_classes() -> None:
     data = pd.DataFrame({"isFraud": [0, 0, 1, 0, 1]})
     assert get_class_distribution(data) == {"Legitimate": 3, "Fraud": 2}
 
 
-def test_feature_engineering_adds_time_and_amount_features():
+def test_feature_engineering_adds_time_and_amount_features() -> None:
     data = pd.DataFrame({"TransactionDT": [0, 3600, 23 * 3600], "TransactionAmt": [0.0, 10.0, 2.5]})
 
     result = engineer_features(data)
@@ -38,8 +45,8 @@ def test_feature_engineering_adds_time_and_amount_features():
     assert "hour" not in data.columns
 
 
-def test_preprocessing_fits_and_reuses_encoders_with_unseen_categories():
-    data = _make_synthetic(n=800, seed=21)
+def test_preprocessing_fits_and_reuses_encoders_with_unseen_categories() -> None:
+    data = make_demo_data(rows=800, seed=21)
     x_train, y_train, encoders, columns = preprocess(data, fit=True)
 
     assert x_train.shape == (800, len(columns))
@@ -49,7 +56,6 @@ def test_preprocessing_fits_and_reuses_encoders_with_unseen_categories():
     inference = data.drop(columns=["isFraud"]).iloc[:3].copy()
     inference.loc[inference.index[0], "card4"] = "new-card-type"
 
-    # Mask unknown values to the implementation's explicit fallback category.
     for column in encoders:
         if column == "_numeric_medians" or column not in inference.columns:
             continue
@@ -59,24 +65,21 @@ def test_preprocessing_fits_and_reuses_encoders_with_unseen_categories():
             lambda value: value if value in set(encoder.classes_) else "unknown"
         )
 
-    x_inference, y_inference, _, inference_columns = preprocess(inference, fit=False, encoders=encoders)
+    x_inference, y_inference, _, inference_columns = preprocess(
+        inference, fit=False, encoders=encoders
+    )
     assert inference_columns == columns
     assert x_inference.shape == (3, len(columns))
     assert y_inference is None
     assert np.isfinite(x_inference).all()
 
 
-def test_logistic_training_smoke_returns_metrics_and_artifact():
-    data = _make_synthetic(n=1000, seed=42)
+def test_logistic_training_smoke_returns_metrics_and_artifact() -> None:
+    data = make_demo_data(rows=1000, seed=42)
     x, y, _, feature_names = preprocess(data, fit=True)
 
     results, x_test, y_test = train_all(
-        x,
-        y,
-        feature_names,
-        use_lgb=False,
-        use_rf=False,
-        use_lr=True,
+        x, y, feature_names, use_lgb=False, use_rf=False, use_lr=True
     )
 
     assert list(results) == ["Logistic Regression"]
@@ -89,8 +92,8 @@ def test_logistic_training_smoke_returns_metrics_and_artifact():
     assert "confusion_matrix" in result["metrics"]
 
 
-def test_training_rejects_no_selected_models():
-    data = _make_synthetic(n=200, seed=9)
+def test_training_rejects_no_selected_models() -> None:
+    data = make_demo_data(rows=200, seed=9)
     x, y, _, feature_names = preprocess(data, fit=True)
 
     with pytest.raises(ValueError, match="No models selected"):

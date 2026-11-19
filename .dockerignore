@@ -1,0 +1,39 @@
+# VCS / CI
+.git
+.gitignore
+.github
+.pytest_cache
+.mypy_cache
+.ruff_cache
+
+# Local environments and secrets
+.env
+.env.*
+!.env.example
+.venv
+venv
+env
+
+# Python caches and build output
+__pycache__
+*.py[cod]
+*.egg-info
+build
+dist
+
+# Large/generated data: mount these at runtime instead
+data/*.csv
+data/*.csv.zip
+data/*.zip
+artifacts
+mlruns
+
+# Editor / OS / notebooks
+.vscode
+.idea
+*.swp
+.DS_Store
+Thumbs.db
+desktop.ini
+.ipynb_checkpoints
+analysis.ipynb

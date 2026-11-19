@@ -228,3 +228,102 @@ def model_metrics_bar(results: dict) -> go.Figure:
 
     fig.update_layout(title="Model Comparison", **_LAYOUT, showlegend=False)
     return fig
+
+
+# ---------------------------------------------------------------------------
+# Platform-era EDA charts (existing function signatures above are unchanged)
+# ---------------------------------------------------------------------------
+def fraud_vs_legit_amount_distribution(df: pd.DataFrame, cap: float | None = 2000.0) -> go.Figure:
+    """Overlaid amount histograms for fraud vs legitimate transactions."""
+    work = df.copy()
+    amounts = pd.to_numeric(work["TransactionAmt"], errors="coerce")
+    if cap is not None:
+        amounts = amounts.clip(upper=cap)
+    work = work.assign(TransactionAmt=amounts, Class=work["isFraud"].map({0: "Legitimate", 1: "Fraud"}))
+    fig = px.histogram(
+        work,
+        x="TransactionAmt",
+        color="Class",
+        color_discrete_map={"Legitimate": PALETTE["legit"], "Fraud": PALETTE["fraud"]},
+        barmode="overlay",
+        opacity=0.62,
+        nbins=60,
+        title="Fraud vs Legitimate — Transaction Amount"
+        + (f" (capped at ${cap:,.0f})" if cap is not None else ""),
+    )
+    suffix = " (capped)" if cap is not None else ""
+    fig.update_layout(xaxis_title=f"TransactionAmt{suffix} ($)", yaxis_title="Count",
+                      legend=dict(orientation="h", y=1.08), **_LAYOUT)
+    return fig
+
+
+def fraud_by_category(df: pd.DataFrame, column: str = "ProductCD") -> go.Figure:
+    """Fraud rate (bars) and volume (line) by a categorical column."""
+    grp = df.groupby(column, observed=True)["isFraud"].agg(["count", "mean"]).reset_index()
+    fig = make_subplots(specs=[[{"secondary_y": True}]])
+    fig.add_trace(go.Bar(
+        x=grp[column].astype(str), y=grp["mean"] * 100,
+        name="Fraud rate", marker_color=PALETTE["fraud"],
+        hovertemplate="%{x}<br>Fraud rate: %{y:.2f}%<extra></extra>",
+    ), secondary_y=False)
+    fig.add_trace(go.Scatter(
+        x=grp[column].astype(str), y=grp["count"],
+        name="Transactions", mode="lines+markers",
+        line=dict(color=PALETTE["accent"], width=2),
+        hovertemplate="%{x}<br>Transactions: %{y:,}<extra></extra>",
+    ), secondary_y=True)
+    fig.update_layout(title=f"Fraud Rate by {column}",
+                      legend=dict(orientation="h", y=1.12), **_LAYOUT)
+    fig.update_yaxes(title_text="Fraud rate (%)", secondary_y=False)
+    fig.update_yaxes(title_text="Transaction count", secondary_y=True)
+    return fig
+
+
+def fraud_by_relative_time(df: pd.DataFrame, bin_days: int = 1) -> go.Figure:
+    """Fraud rate over relative time derived from TransactionDT.
+
+    IEEE-CIS ``TransactionDT`` is a timedelta from an undisclosed origin, not a
+    calendar timestamp; the x-axis is therefore labelled explicitly as relative.
+    """
+    work = df.copy()
+    relative_day = pd.to_numeric(work["TransactionDT"], errors="coerce") // (86400 * max(int(bin_days), 1))
+    work = work.assign(relative_day=relative_day).dropna(subset=["relative_day", "isFraud"])
+    grp = work.groupby("relative_day")["isFraud"].agg(["count", "mean"]).reset_index()
+    grp = grp.sort_values("relative_day")
+    fig = make_subplots(specs=[[{"secondary_y": True}]])
+    fig.add_trace(go.Scatter(
+        x=grp["relative_day"], y=grp["mean"] * 100,
+        name="Fraud rate", mode="lines+markers",
+        line=dict(color=PALETTE["fraud"], width=2),
+        hovertemplate="Relative day %{x}<br>Fraud rate: %{y:.2f}%<extra></extra>",
+    ), secondary_y=False)
+    fig.add_trace(go.Bar(
+        x=grp["relative_day"], y=grp["count"], name="Transactions",
+        marker_color=f"rgba(108,99,255,0.35)",
+        hovertemplate="Relative day %{x}<br>Transactions: %{y:,}<extra></extra>",
+    ), secondary_y=True)
+    fig.update_layout(
+        title="Fraud Rate Over Relative Time (TransactionDT)",
+        xaxis_title=f"Relative {bin_days}-day bucket since dataset origin (NOT a calendar date)",
+        legend=dict(orientation="h", y=1.12), **_LAYOUT,
+    )
+    fig.update_yaxes(title_text="Fraud rate (%)", secondary_y=False)
+    fig.update_yaxes(title_text="Transaction count", secondary_y=True)
+    return fig
+
+
+def missing_values_bar(df: pd.DataFrame, top_n: int = 20) -> go.Figure:
+    """Bar chart of the columns with the highest missing-value fraction."""
+    missing = (df.isna().mean() * 100).sort_values(ascending=False).head(max(int(top_n), 1))
+    fig = go.Figure(go.Bar(
+        x=missing.values, y=missing.index.astype(str), orientation="h",
+        marker=dict(color=missing.values,
+                    colorscale=[[0, PALETTE["legit"]], [1, PALETTE["warn"]]]),
+        hovertemplate="<b>%{y}</b><br>Missing: %{x:.2f}%<extra></extra>",
+    ))
+    fig.update_layout(
+        title="Missing Values by Column", xaxis_title="Missing (%)",
+        yaxis=dict(autorange="reversed"), height=max(320, 22 * len(missing)),
+        **_LAYOUT,
+    )
+    return fig

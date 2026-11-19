@@ -1,0 +1,92 @@
+# Docker Compose v2.24+ is recommended (uses env_file `required: false` so a
+# local .env file is optional). `docker compose up` starts only the API; the
+# dashboard and cache are opt-in profiles.
+#
+#   docker compose up --build
+#   docker compose --profile dashboard up --build
+#   docker compose --profile cache up --build
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: uvicorn api.main:app --host 0.0.0.0 --port 8000
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      FRAUD_DATA_MODE: ${FRAUD_DATA_MODE:-demo}
+      FRAUD_DATA_DIR: ${FRAUD_DATA_DIR:-data}
+      FRAUD_MODEL_PATH: ${FRAUD_MODEL_PATH:-artifacts/candidate.joblib}
+      FRAUD_THRESHOLD: ${FRAUD_THRESHOLD:-0.5}
+      FRAUD_RANDOM_SEED: ${FRAUD_RANDOM_SEED:-42}
+      FRAUD_API_KEY: ${FRAUD_API_KEY:-}
+    ports:
+      - "${FRAUD_API_PORT:-8000}:8000"
+    volumes:
+      - ./artifacts:/app/artifacts
+      - ./data:/app/data:ro
+    restart: unless-stopped
+    # Liveness probe only (GET /health/live); readiness is reported by /health/ready.
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/live', timeout=2).read()"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  streamlit:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    profiles:
+      - dashboard
+    command: >-
+      streamlit run app.py
+      --server.address 0.0.0.0
+      --server.port 8501
+      --server.headless true
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      FRAUD_DATA_MODE: ${FRAUD_DATA_MODE:-demo}
+      FRAUD_DATA_DIR: ${FRAUD_DATA_DIR:-data}
+      FRAUD_MODEL_PATH: ${FRAUD_MODEL_PATH:-artifacts/candidate.joblib}
+      FRAUD_API_URL: ${FRAUD_API_URL:-http://api:8000}
+    ports:
+      - "${STREAMLIT_PORT:-8501}:8501"
+    volumes:
+      - ./artifacts:/app/artifacts
+      - ./data:/app/data:ro
+    depends_on:
+      - api
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; s=socket.create_connection(('127.0.0.1', 8501), 2); s.close()"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  redis:
+    image: redis:7-alpine
+    profiles:
+      - cache
+    env_file:
+      - path: .env
+        required: false
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis-data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  redis-data:
