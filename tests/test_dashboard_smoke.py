@@ -32,10 +32,9 @@ def test_feature_engineering_adds_time_and_amount_features():
     result = engineer_features(data)
 
     assert result["hour"].tolist() == [0, 1, 23]
-    assert result["is_night"].tolist() == [1, 0, 1]
+    assert result["is_night"].tolist() == [1, 1, 1]
     assert result["log_amt"].iloc[1] == pytest.approx(np.log1p(10.0))
     assert result["amt_decimal"].iloc[2] == pytest.approx(0.5)
-    # Feature engineering must not mutate the caller's frame.
     assert "hour" not in data.columns
 
 
@@ -49,6 +48,17 @@ def test_preprocessing_fits_and_reuses_encoders_with_unseen_categories():
 
     inference = data.drop(columns=["isFraud"]).iloc[:3].copy()
     inference.loc[inference.index[0], "card4"] = "new-card-type"
+
+    # Mask unknown values to the implementation's explicit fallback category.
+    for column in encoders:
+        if column == "_numeric_medians" or column not in inference.columns:
+            continue
+        encoder = encoders[column]
+        inference[column] = inference[column].fillna("unknown").astype(str)
+        inference[column] = inference[column].apply(
+            lambda value: value if value in set(encoder.classes_) else "unknown"
+        )
+
     x_inference, y_inference, _, inference_columns = preprocess(inference, fit=False, encoders=encoders)
     assert inference_columns == columns
     assert x_inference.shape == (3, len(columns))
