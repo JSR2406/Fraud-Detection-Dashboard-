@@ -20,10 +20,11 @@ st.set_page_config(
 
 import numpy as np
 import pandas as pd
-import plotly.graph_objects as go
 from datetime import datetime
+from pathlib import Path
 
-from src.data_loader    import load_data, get_class_distribution
+from fraud_ml.config import settings
+from src.data_loader    import load_data, get_class_distribution, dataset_source_label, is_demo_source
 from src.visualizations import (
     class_distribution_pie,
     transaction_amount_hist,
@@ -34,6 +35,24 @@ from src.styles import inject_global_css, section_title, footer
 
 # ── Inject CSS ───────────────────────────────────────────────────────────────
 inject_global_css()
+
+# ── Prominent sticky data-provenance banner ──────────────────────────────────
+SOURCE_LABEL = dataset_source_label()
+if is_demo_source(SOURCE_LABEL):
+    st.markdown(
+        """
+        <div style="position:sticky;top:0;z-index:9999;
+                    background:linear-gradient(90deg,#FF4B6E 0%,#FFC107 100%);
+                    color:#0E1117;padding:0.85rem 1.25rem;border-radius:0 0 14px 14px;
+                    box-shadow:0 6px 24px rgba(0,0,0,0.55);text-align:center;
+                    font-weight:800;letter-spacing:0.01em;margin-bottom:1.25rem;">
+          🚧 &nbsp;DEMO / SYNTHETIC DATA IN USE &nbsp;·&nbsp;
+          All figures on this page are exploratory only and are <u>NOT validated real-world results</u>.
+          Set <code>FRAUD_DATA_MODE=real</code> with licensed data for meaningful evaluation.
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 # ── Sidebar ──────────────────────────────────────────────────────────────────
 with st.sidebar:
@@ -53,6 +72,7 @@ with st.sidebar:
       <div style="padding:0.4rem 0.75rem;font-size:0.9rem;color:#8B8FA8;">📊 EDA — Data exploration</div>
       <div style="padding:0.4rem 0.75rem;font-size:0.9rem;color:#8B8FA8;">🤖 Model Training — Train &amp; compare</div>
       <div style="padding:0.4rem 0.75rem;font-size:0.9rem;color:#8B8FA8;">🔮 Predict — Live transaction check</div>
+      <div style="padding:0.4rem 0.75rem;font-size:0.9rem;color:#8B8FA8;">📦 Batch Detection — Score a CSV</div>
       <div style="padding:0.4rem 0.75rem;font-size:0.9rem;color:#8B8FA8;">ℹ️ About — Project details</div>
       <div style="padding:0.4rem 0.75rem;font-size:0.9rem;color:#8B8FA8;">📋 Summary — Overall summarisation</div>
     </div>
@@ -60,14 +80,19 @@ with st.sidebar:
 
     st.markdown("---")
 
-    # Model status
-    is_trained = "train_results" in st.session_state
+    # Model status reflects the persisted platform artifact, not just this session.
+    artifact_path = Path(settings.artifact_path)
+    has_artifact = artifact_path.is_file()
     status_html = (
-        '<span class="badge badge-green">✅ Model Trained</span>'
-        if is_trained else
-        '<span class="badge badge-red">⏳ Not Trained Yet</span>'
+        f'<span class="badge badge-green">✅ Artifact Ready</span><br>'
+        f'<span style="color:#8B8FA8;font-size:0.75rem;">{artifact_path}</span>'
+        if has_artifact else
+        '<span class="badge badge-red">⏳ No Persisted Model</span><br>'
+        '<span style="color:#8B8FA8;font-size:0.75rem;">Train on the 🤖 Model Training page</span>'
     )
     st.markdown(f"**Model Status**<br>{status_html}", unsafe_allow_html=True)
+    if "train_results" in st.session_state or "platform_report" in st.session_state:
+        st.caption("This session also holds training results.")
 
     st.markdown("---")
     st.markdown(
@@ -222,5 +247,21 @@ with st.expander("Show sample rows"):
         show_fraud_only = st.checkbox("Fraud only")
     display_df = df[df["isFraud"]==1] if show_fraud_only else df
     st.dataframe(display_df.head(n_rows), use_container_width=True)
+
+# ── Recent predictions (last 5 scoring results) ──────────────────────────────
+section_title("🕒 Recent Predictions")
+recent = st.session_state.get("recent_predictions", [])
+if not recent:
+    st.caption("No scoring results yet — visit 🔮 Predict or 📦 Batch Detection to score a transaction.")
+else:
+    recent_cols = [
+        "Time", "Transaction", "Fraud Probability", "Risk", "Decision", "Model Version", "Source",
+    ]
+    recent_df = pd.DataFrame(recent).tail(5)[::-1]
+    for col in recent_cols:
+        if col not in recent_df.columns:
+            recent_df[col] = "—"
+    st.dataframe(recent_df[recent_cols], use_container_width=True, hide_index=True)
+    st.caption("Only non-sensitive scoring metadata is retained in session state.")
 
 footer()

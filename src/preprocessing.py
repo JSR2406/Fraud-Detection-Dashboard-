@@ -27,13 +27,13 @@ def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
 
     # Time-based features
     if "TransactionDT" in df.columns:
-        df["hour"]    = (df["TransactionDT"] // 3600) % 24
-        df["day"]     = (df["TransactionDT"] // 86400) % 7
+        df["hour"] = (df["TransactionDT"] // 3600) % 24
+        df["day"] = (df["TransactionDT"] // 86400) % 7
         df["is_night"] = ((df["hour"] < 6) | (df["hour"] >= 22)).astype(int)
 
     # Amount features
     if "TransactionAmt" in df.columns:
-        df["log_amt"]     = np.log1p(df["TransactionAmt"])
+        df["log_amt"] = np.log1p(df["TransactionAmt"])
         df["amt_decimal"] = df["TransactionAmt"] % 1
 
     return df
@@ -42,7 +42,8 @@ def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
 def preprocess(df: pd.DataFrame, fit: bool = True, encoders: dict = None):
     """
     Encode categoricals, fill missing values, return X, y, encoders.
-    If fit=False, reuse existing encoders dict for inference.
+    If fit=False, reuse existing encoders dict for inference. Unseen categories
+    are mapped to the reserved "unknown" category.
     """
     df = engineer_features(df)
 
@@ -57,18 +58,24 @@ def preprocess(df: pd.DataFrame, fit: bool = True, encoders: dict = None):
 
     numeric_medians = encoders.get("_numeric_medians", {})
 
-    # Encode categoricals
+    # Encode categoricals. Always include a reserved "unknown" class in the
+    # fitted vocabulary so transform can safely encode missing or new values.
     for col in cat_cols:
         df[col] = df[col].fillna("unknown").astype(str)
         if fit:
             le = LabelEncoder()
-            df[col] = le.fit_transform(df[col])
+            vocabulary = pd.concat(
+                [df[col], pd.Series(["unknown"], dtype=str)],
+                ignore_index=True,
+            )
+            le.fit(vocabulary)
+            df[col] = le.transform(df[col])
             encoders[col] = le
         else:
             le = encoders.get(col)
-            if le:
+            if le is not None:
                 known = set(le.classes_)
-                df[col] = df[col].apply(lambda x: x if x in known else "unknown")
+                df[col] = df[col].apply(lambda value: value if value in known else "unknown")
                 df[col] = le.transform(df[col])
             else:
                 df[col] = 0

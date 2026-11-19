@@ -12,12 +12,22 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 from datetime import datetime
+from pathlib import Path
 
-from src.data_loader    import load_data, get_class_distribution
+from fraud_ml.config import settings
+from src.data_loader    import load_data, get_class_distribution, dataset_source_label, is_demo_source
 from src.styles         import inject_global_css, section_title, footer
 
 st.set_page_config(page_title="Summary | Fraud Detection", page_icon="📋", layout="wide")
 inject_global_css()
+
+SOURCE_LABEL = dataset_source_label()
+if is_demo_source(SOURCE_LABEL):
+    st.warning(
+        "🚧 This summary describes **synthetic demo data**. Figures are exploratory only and "
+        "are NOT validated real-world results. Set `FRAUD_DATA_MODE=real` for meaningful data.",
+        icon="⚠️",
+    )
 
 
 def hex_to_rgba(hex_color: str, alpha: float = 0.08) -> str:
@@ -177,81 +187,118 @@ st.markdown("---")
 # ── SECTION 2 — Model Leaderboard ─────────────────────────────────────────────
 section_title("🏆 Model Leaderboard")
 
-if "train_results" not in st.session_state:
+
+def _number_or_none(value: object) -> float | None:
+    try:
+        number = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    return number if np.isfinite(number) else None
+
+
+def _persisted_leaderboard() -> list[dict]:
+    """Read the platform's persisted report so the leaderboard survives refreshes."""
+    metrics_file = Path(str(settings.artifact_path)).parent / "metrics.json"
+    if not metrics_file.is_file():
+        return []
+    try:
+        import json
+        report = json.loads(metrics_file.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    rows = []
+    for name, item in report.get("models", {}).items():
+        test = item.get("test", {})
+        matrix = test.get("confusion_matrix") or [[0, 0], [0, 0]]
+        total = sum(int(value) for row in matrix for value in row)
+        accuracy = (
+            (int(matrix[0][0]) + int(matrix[1][1])) / total if total else None
+        )
+        rows.append({
+            "Model": name,
+            "ROC-AUC": _number_or_none(test.get("roc_auc")),
+            "Accuracy": accuracy,
+            "Avg Precision": _number_or_none(test.get("average_precision")),
+            "F1 (Fraud)": _number_or_none(test.get("f1")),
+            "Threshold": _number_or_none(item.get("threshold")),
+        })
+    return rows
+
+
+leaderboard_rows: list[dict] = []
+if "train_results" in st.session_state:
+    for name, res in st.session_state["train_results"].items():
+        m = res["metrics"]
+        f1 = m.get("report", {}).get("1", {}).get("f1-score")
+        leaderboard_rows.append({
+            "Model": name,
+            "ROC-AUC": _number_or_none(m.get("roc_auc")),
+            "Accuracy": _number_or_none(m.get("accuracy")),
+            "Avg Precision": _number_or_none(m.get("avg_prec")),
+            "F1 (Fraud)": _number_or_none(f1),
+            "Threshold": _number_or_none(res.get("threshold")),
+        })
+else:
+    leaderboard_rows = _persisted_leaderboard()
+
+if not leaderboard_rows:
     st.info(
         "📌 No trained models found. Visit **🤖 Model Training** to train models, "
         "then return here for the full leaderboard.",
         icon="💡",
     )
 else:
-    results = st.session_state["train_results"]
-
-    # Build leaderboard table
-    rows = []
-    for name, res in results.items():
-        m = res["metrics"]
-        f1 = m.get("report", {}).get("1", {}).get("f1-score", None)
-        rows.append({
-            "Model":        name,
-            "ROC-AUC":      round(m["roc_auc"], 4),
-            "Accuracy":     round(m["accuracy"], 4),
-            "Avg Precision":round(m["avg_prec"], 4),
-            "F1 (Fraud)":   round(f1, 4) if f1 else "—",
-        })
-    lb_df = pd.DataFrame(rows).sort_values("ROC-AUC", ascending=False).reset_index(drop=True)
+    lb_df = pd.DataFrame(leaderboard_rows)
+    lb_df = lb_df.sort_values("Avg Precision", ascending=False, na_position="last").reset_index(drop=True)
     lb_df.index = lb_df.index + 1  # 1-based rank
-
-    # Highlight best row
     best_name = lb_df.iloc[0]["Model"]
+    best_ap = _number_or_none(lb_df.iloc[0]["Avg Precision"]) or 0.0
 
     st.markdown(f"""
     <div class="card" style="border-left:4px solid #00D4AA;display:flex;align-items:center;gap:1.5rem;margin-bottom:1rem;">
       <div style="font-size:2.5rem;">🥇</div>
       <div>
         <h3 style="margin:0;color:#00D4AA;">{best_name}</h3>
-        <p style="margin:0;color:#8B8FA8;">Best model by ROC-AUC:
-          <strong style="color:#FAFAFA;">{lb_df.iloc[0]['ROC-AUC']:.4f}</strong>
-          &nbsp;·&nbsp;Accuracy:
-          <strong style="color:#FAFAFA;">{lb_df.iloc[0]['Accuracy']:.4f}</strong>
+        <p style="margin:0;color:#8B8FA8;">Selected on validation average precision.
+          Final-test average precision:
+          <strong style="color:#FAFAFA;">{best_ap:.4f}</strong> if a persisted report is available.
         </p>
       </div>
     </div>
     """, unsafe_allow_html=True)
 
-    st.dataframe(
-        lb_df.style.background_gradient(cmap="Purples", subset=["ROC-AUC"])
-             .format({"ROC-AUC": "{:.4f}", "Accuracy": "{:.4f}", "Avg Precision": "{:.4f}"}),
-        use_container_width=True,
+    st.dataframe(lb_df, use_container_width=True)
+    st.caption(
+        "Metrics come from your own training run (session results or the persisted "
+        "artifact report). Threshold and cost assumptions are configurable in fraud_ml.config."
     )
 
-    # Radar chart comparison
+    # Radar chart comparison (only models with all three values available)
     metrics_keys = ["ROC-AUC", "Accuracy", "Avg Precision"]
-    categories   = metrics_keys + [metrics_keys[0]]  # close the polygon
-    fig_rad = go.Figure()
-    colors_rad = ["#6C63FF", "#00D4AA", "#FF4B6E", "#FFC107"]
-    for i, (_, row) in enumerate(lb_df.iterrows()):
-        vals = [row[k] for k in metrics_keys]
-        fig_rad.add_trace(go.Scatterpolar(
-            r=vals + [vals[0]],
-            theta=categories,
-            name=row["Model"],
-            fill="toself",
-            line_color=colors_rad[i % len(colors_rad)],
-            fillcolor=hex_to_rgba(colors_rad[i % len(colors_rad)], 0.08),
-        ))
-    fig_rad.update_layout(
-        polar=dict(
-            bgcolor="#1A1D27",
-            radialaxis=dict(visible=True, range=[0.7, 1.0], gridcolor="rgba(255,255,255,0.07)"),
-            angularaxis=dict(gridcolor="rgba(255,255,255,0.07)"),
-        ),
-        paper_bgcolor="#0E1117", font_color="#FAFAFA",
-        title=dict(text="Model Performance Radar", font=dict(size=15, color="#6C63FF")),
-        height=380, margin=dict(l=40, r=40, t=60, b=20),
-        legend=dict(orientation="h", yanchor="bottom", y=-0.15),
-        showlegend=True,
-    )
-    st.plotly_chart(fig_rad, use_container_width=True)
+    radar_df = lb_df.dropna(subset=metrics_keys)
+    if len(radar_df) >= 2:
+        categories = metrics_keys + [metrics_keys[0]]
+        fig_rad = go.Figure()
+        colors_rad = ["#6C63FF", "#00D4AA", "#FF4B6E", "#FFC107"]
+        for i, (_, row) in enumerate(radar_df.iterrows()):
+            vals = [float(row[k]) for k in metrics_keys]
+            fig_rad.add_trace(go.Scatterpolar(
+                r=vals + [vals[0]], theta=categories, name=row["Model"], fill="toself",
+                line_color=colors_rad[i % len(colors_rad)],
+                fillcolor=hex_to_rgba(colors_rad[i % len(colors_rad)], 0.08),
+            ))
+        fig_rad.update_layout(
+            polar=dict(bgcolor="#1A1D27",
+                       radialaxis=dict(visible=True, range=[0.0, 1.0], gridcolor="rgba(255,255,255,0.07)"),
+                       angularaxis=dict(gridcolor="rgba(255,255,255,0.07)")),
+            paper_bgcolor="#0E1117", font_color="#FAFAFA",
+            title=dict(text="Model Performance Radar", font=dict(size=15, color="#6C63FF")),
+            height=380, margin=dict(l=40, r=40, t=60, b=20),
+            legend=dict(orientation="h", yanchor="bottom", y=-0.15), showlegend=True,
+        )
+        st.plotly_chart(fig_rad, use_container_width=True)
+    else:
+        st.caption("Radar comparison needs at least two models with complete metric sets.")
 
 st.markdown("---")
 
@@ -263,28 +310,42 @@ if not history:
     st.info("No predictions have been made yet. Go to **🔮 Predict** to test live transactions.", icon="🔮")
 else:
     hist_df = pd.DataFrame(history)
+    if "Verdict" not in hist_df.columns:
+        hist_df["Verdict"] = hist_df.get("Decision", pd.Series(["—"] * len(hist_df)))
+    flagged = hist_df["Verdict"].astype(str).str.contains("FRAUD|REVIEW", regex=True)
+    if "Fraud Score" in hist_df.columns:
+        scores = pd.to_numeric(
+            hist_df["Fraud Score"].astype(str).str.replace("%", "", regex=False),
+            errors="coerce",
+        )
+    elif "fraud_probability" in hist_df.columns:
+        scores = pd.to_numeric(hist_df["fraud_probability"], errors="coerce") * 100
+    else:
+        scores = pd.Series([np.nan] * len(hist_df))
 
     # Summary KPIs
-    total_preds  = len(hist_df)
-    fraud_preds  = (hist_df["Verdict"] == "🚨 FRAUD").sum()
-    safe_preds   = total_preds - fraud_preds
-    avg_score    = hist_df["Fraud Score"].str.replace("%", "").astype(float).mean()
+    total_preds = len(hist_df)
+    fraud_preds = int(flagged.sum())
+    safe_preds = total_preds - fraud_preds
+    avg_score = float(scores.mean()) if scores.notna().any() else 0.0
 
     pk1, pk2, pk3, pk4 = st.columns(4)
     pk1.metric("🔢 Total Predictions", total_preds)
-    pk2.metric("🚨 Fraud Flagged",     fraud_preds, f"{fraud_preds/total_preds*100:.1f}%")
-    pk3.metric("✅ Safe Passed",        safe_preds,  f"{safe_preds/total_preds*100:.1f}%")
+    pk2.metric("🚩 Sent to Review",   fraud_preds, f"{fraud_preds/total_preds*100:.1f}%")
+    pk3.metric("✅ Approved",          safe_preds,  f"{safe_preds/total_preds*100:.1f}%")
     pk4.metric("📊 Avg Fraud Score",   f"{avg_score:.1f}%")
 
     st.markdown("<br>", unsafe_allow_html=True)
 
     # Verdict pie
-    v_counts = hist_df["Verdict"].value_counts()
+    v_counts = hist_df["Verdict"].astype(str).value_counts()
+    pie_colors = ["#FF4B6E" if "FRAUD" in label or "REVIEW" in label else "#00D4AA"
+                  for label in v_counts.index]
     fig_vp = go.Figure(go.Pie(
         labels=v_counts.index.tolist(),
         values=v_counts.values.tolist(),
         hole=0.55,
-        marker_colors=["#FF4B6E", "#00D4AA"],
+        marker_colors=pie_colors,
         textinfo="label+percent",
     ))
     fig_vp.update_layout(
@@ -297,13 +358,13 @@ else:
         st.plotly_chart(fig_vp, use_container_width=True)
     with col_ht:
         # Score histogram
-        scores = hist_df["Fraud Score"].str.replace("%", "").astype(float).tolist()
         fig_sh = go.Figure(go.Histogram(
-            x=scores, nbinsx=10,
+            x=scores.dropna().tolist(), nbinsx=10,
             marker_color="#6C63FF",
             hovertemplate="Score %{x:.0f}%: %{y} predictions<extra></extra>",
         ))
-        fig_sh.add_vline(x=50, line_dash="dash", line_color="#FF4B6E", annotation_text="Decision threshold")
+        fig_sh.add_vline(x=settings.decision_threshold * 100, line_dash="dash",
+                         line_color="#FF4B6E", annotation_text="Decision threshold")
         fig_sh.update_layout(
             paper_bgcolor="#0E1117", plot_bgcolor="#1A1D27",
             font_color="#FAFAFA",
@@ -324,15 +385,15 @@ section_title("💡 Key Findings & Takeaways")
 
 f1, f2, f3 = st.columns(3)
 with f1:
-    st.markdown("""
+    st.markdown(f"""
     <div class="card card-accent">
-      <h4 style="color:#6C63FF;margin-top:0;">📊 Dataset Insights</h4>
+      <h4 style="color:#6C63FF;margin-top:0;">📊 Dataset Snapshot</h4>
       <ul style="color:#8B8FA8;font-size:0.88rem;padding-left:1.2rem;line-height:1.8;">
-        <li>Severe class imbalance — ~3.5% fraud rate</li>
-        <li>High-value transactions (&gt;$500) carry elevated fraud risk</li>
-        <li>Night-time (10PM–6AM) shows higher fraud concentration</li>
-        <li>Mobile devices correlate with higher fraud rates</li>
-        <li>Anonymous email domains are strong fraud signals</li>
+        <li>Loaded source: <strong>{SOURCE_LABEL}</strong></li>
+        <li>Observed fraud rate in this dataset: <strong>{fraud_rate:.2f}%</strong></li>
+        <li>Night-time fraud rate (relative hour): <strong>{night_fraud:.1f}%</strong></li>
+        <li>Amount, product and relative-time breakdowns are on the 📊 EDA page.</li>
+        <li>Demo records are illustrative and are not real-world evidence.</li>
       </ul>
     </div>
     """, unsafe_allow_html=True)
@@ -342,11 +403,10 @@ with f2:
     <div class="card card-accent" style="border-left-color:#00D4AA;">
       <h4 style="color:#00D4AA;margin-top:0;">🤖 Model Insights</h4>
       <ul style="color:#8B8FA8;font-size:0.88rem;padding-left:1.2rem;line-height:1.8;">
-        <li>LightGBM achieves best ROC-AUC (~0.98)</li>
-        <li>Random Forest offers solid interpretability (~0.95)</li>
-        <li>Logistic Regression is the fastest baseline (~0.88)</li>
-        <li>Class-weight balancing crucial for recall on fraud class</li>
-        <li>TransactionAmt and C-features rank highest in importance</li>
+        <li>No fixed winner is asserted: the champion is selected on validation average precision.</li>
+        <li>Final test metrics are reported only after that selection.</li>
+        <li>Operating thresholds come from the validation partition via fraud_ml.models.threshold.</li>
+        <li>Artifact loading is restricted to trusted, operator-provisioned files.</li>
       </ul>
     </div>
     """, unsafe_allow_html=True)
@@ -356,11 +416,10 @@ with f3:
     <div class="card card-accent" style="border-left-color:#FFC107;">
       <h4 style="color:#FFC107;margin-top:0;">🚀 Recommendations</h4>
       <ul style="color:#8B8FA8;font-size:0.88rem;padding-left:1.2rem;line-height:1.8;">
-        <li>Deploy LightGBM for production scoring</li>
-        <li>Set decision threshold at 0.4–0.45 for higher recall</li>
-        <li>Monitor night-time & high-value transactions closely</li>
-        <li>Re-train monthly to adapt to fraud drift</li>
-        <li>Integrate SHAP for regulatory explainability</li>
+        <li>Configure threshold, split fractions and cost assumptions in fraud_ml.config.</li>
+        <li>Validate on licensed real data before any operational decision.</li>
+        <li>Monitor drift and re-train on a schedule you define.</li>
+        <li>Treat any optional model explanations as non-causal signals only.</li>
       </ul>
     </div>
     """, unsafe_allow_html=True)
@@ -371,20 +430,25 @@ st.markdown("---")
 section_title("📥 Export Summary Report")
 
 # Build a text report
-trained   = "train_results" in st.session_state
+trained   = bool(leaderboard_rows)
 model_txt = ""
 if trained:
-    results = st.session_state["train_results"]
-    for name, res in results.items():
-        m = res["metrics"]
-        model_txt += f"  {name}: AUC={m['roc_auc']:.4f}, Acc={m['accuracy']:.4f}, AvgPrec={m['avg_prec']:.4f}\n"
+    for row in leaderboard_rows:
+        auc = _number_or_none(row.get("ROC-AUC"))
+        ap = _number_or_none(row.get("Avg Precision"))
+        model_txt += (f"  {row['Model']}: AUC={auc if auc is not None else 'n/a'}, "
+                      f"AvgPrec={ap if ap is not None else 'n/a'}\n")
 
 pred_txt = ""
 history = st.session_state.get("pred_history", [])
 if history:
     hist_df2 = pd.DataFrame(history)
-    fraud_n  = (hist_df2["Verdict"] == "🚨 FRAUD").sum()
-    pred_txt = f"Total predictions: {len(hist_df2)}  |  Fraud flagged: {fraud_n}  |  Safe: {len(hist_df2)-fraud_n}"
+    if "Verdict" in hist_df2.columns:
+        flagged_n = int(hist_df2["Verdict"].astype(str).str.contains("FRAUD|REVIEW", regex=True).sum())
+    else:
+        flagged_n = 0
+    pred_txt = (f"Total predictions: {len(hist_df2)}  |  Sent to review: {flagged_n}  |  "
+                f"Approved: {len(hist_df2)-flagged_n}")
 else:
     pred_txt = "No predictions made yet."
 
@@ -394,6 +458,9 @@ report_text = f"""
   Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
   Author   : Janmejay Singh Rathore
 ====================================================
+
+DATASET SOURCE: {SOURCE_LABEL}
+(If this says demo/synthetic, no figure below is a validated real-world result.)
 
 DATASET SNAPSHOT
 ----------------
@@ -412,20 +479,13 @@ PREDICTION ACTIVITY
 -------------------
   {pred_txt}
 
-KEY FINDINGS
-------------
-  Dataset:
-    - Severe class imbalance (~3.5% fraud rate)
-    - High-value (>$500) transactions carry elevated fraud risk
-    - Night-time fraud concentration is notably higher
-  Models:
-    - LightGBM best ROC-AUC (~0.98)
-    - Random Forest solid at ~0.95
-    - Class-weight balancing crucial for fraud recall
-  Recommendations:
-    - Deploy LightGBM; threshold at 0.4–0.45
-    - Monitor night-time & high-value transactions
-    - Re-train monthly to counter fraud drift
+KEY FINDINGS / CAVEATS
+----------------------
+  - All dataset figures above describe the loaded source only.
+  - Champion is selected on validation average precision; test metrics follow selection.
+  - Decision threshold, split fractions and cost assumptions are configurable via fraud_ml.config.
+  - Explainability, when available, is non-causal and is not evidence of fraud.
+  - Validate on licensed real data before operational use.
 
 ====================================================
   FraudShield Dashboard · IEEE-CIS · Built w/ Streamlit

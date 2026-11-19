@@ -1,88 +1,84 @@
 """
 src/data_loader.py
-Handles loading and caching of the IEEE-CIS Fraud Detection dataset.
-Uses synthetic demo data when the real CSVs are not present (for Streamlit Cloud).
+Backward-compatible Streamlit-facing wrapper around ``fraud_ml.data.ingestion``.
+
+The data mode is always explicit (``settings.data_mode``). Real-data failures are
+surfaced to the caller rather than silently replaced with synthetic records.
 """
 
-import numpy as np
+from pathlib import Path
+
 import pandas as pd
 import streamlit as st
 
-
-# ---------------------------------------------------------------------------
-# Synthetic demo dataset (used when real data is absent)
-# ---------------------------------------------------------------------------
-def _make_synthetic(n: int = 5000, seed: int = 42) -> pd.DataFrame:
-    """Generate a realistic-looking synthetic fraud dataset."""
-    rng = np.random.default_rng(seed)
-
-    transaction_amt = rng.exponential(scale=80, size=n).round(2)
-    is_fraud = (rng.random(n) < 0.035).astype(int)
-
-    # Fraud transactions tend to be higher-value
-    transaction_amt = np.where(is_fraud, transaction_amt * 3.5, transaction_amt)
-
-    product_cd = rng.choice(["W", "H", "C", "S", "R"], size=n, p=[0.5, 0.2, 0.15, 0.1, 0.05])
-    card_type  = rng.choice(["visa", "mastercard", "discover", "amex"], size=n, p=[0.55, 0.3, 0.1, 0.05])
-    p_emaildomain = rng.choice(
-        ["gmail.com", "yahoo.com", "hotmail.com", "anonymous.com", "outlook.com", None],
-        size=n, p=[0.35, 0.25, 0.15, 0.10, 0.10, 0.05],
-    )
-
-    df = pd.DataFrame(
-        {
-            "TransactionID":  np.arange(2987000, 2987000 + n),
-            "TransactionDT":  rng.integers(86400, 15811200, size=n),
-            "TransactionAmt": transaction_amt,
-            "ProductCD":      product_cd,
-            "card1":          rng.integers(1000, 18000, size=n),
-            "card2":          rng.choice([np.nan, *range(100, 600)], size=n),
-            "card4":          card_type,
-            "card6":          rng.choice(["debit", "credit"], size=n, p=[0.6, 0.4]),
-            "P_emaildomain":  p_emaildomain,
-            "dist1":          rng.choice([np.nan, *rng.exponential(50, 200).round(1)], size=n),
-            "C1":  rng.integers(0, 3000, size=n),
-            "C2":  rng.integers(0, 3000, size=n),
-            "C6":  rng.integers(0, 1000, size=n),
-            "C11": rng.integers(0, 1000, size=n),
-            "V95":  rng.integers(0, 5, size=n),
-            "V96":  rng.integers(0, 5, size=n),
-            "V97":  rng.integers(0, 10, size=n),
-            "DeviceType": rng.choice(["desktop", "mobile", None], size=n, p=[0.45, 0.45, 0.10]),
-            "isFraud":    is_fraud,
-        }
-    )
-    return df
+from fraud_ml.config import settings
+from fraud_ml.data.ingestion import load_dataset, make_demo_data
 
 
 # ---------------------------------------------------------------------------
 # Public loader
 # ---------------------------------------------------------------------------
 @st.cache_data(show_spinner="Loading dataset …")
-def load_data(data_dir: str = "data") -> pd.DataFrame:
+def load_data(
+    data_dir: str | Path | None = None,
+    sample_rows: int | None = None,
+    mode: str | None = None,
+    seed: int | None = None,
+) -> pd.DataFrame:
+    """Load the configured dataset through the platform ingestion layer.
+
+    Parameters mirror the legacy loader: ``data_dir`` may still be supplied
+    positionally. When omitted, the environment-backed platform settings are
+    used. There is deliberately **no** implicit synthetic fallback.
     """
-    Try to load real IEEE-CIS data from `data_dir`.
-    Falls back to synthetic demo data if files are not found.
+    resolved_mode = str(mode or settings.data_mode).lower()
+    resolved_dir = str(data_dir) if data_dir is not None else str(settings.data_dir)
+    resolved_seed = settings.random_seed if seed is None else int(seed)
+
+    try:
+        frame, _source = load_dataset(
+            resolved_mode,
+            resolved_dir,
+            seed=resolved_seed,
+            sample_rows=sample_rows,
+        )
+    except Exception as exc:
+        raise RuntimeError(
+            f"Could not load fraud data in '{resolved_mode}' mode from "
+            f"'{resolved_dir}': {exc}. No silent fallback was applied. "
+            "Fix the source files/configuration, or explicitly set "
+            "FRAUD_DATA_MODE=demo to request synthetic demonstration data."
+        ) from exc
+    return frame
+
+
+def dataset_source_label(mode: str | None = None) -> str:
+    """Return the human-readable source label for UI banners.
+
+    The wording intentionally matches ``fraud_ml.data.ingestion.load_dataset``
+    so banners cannot disagree with the data actually loaded.
     """
-    import os, zipfile
+    resolved_mode = str(mode or settings.data_mode).lower()
+    if resolved_mode == "real":
+        return "real"
+    if resolved_mode == "demo":
+        return "demo — synthetic demonstration only"
+    return f"unknown ({resolved_mode})"
 
-    tx_path  = os.path.join(data_dir, "train_transaction.csv.zip")
-    id_path  = os.path.join(data_dir, "train_identity.csv.zip")
 
-    if os.path.exists(tx_path):
-        try:
-            with zipfile.ZipFile(tx_path) as z:
-                tx = pd.read_csv(z.open(z.namelist()[0]), nrows=50_000)
-            if os.path.exists(id_path):
-                with zipfile.ZipFile(id_path) as z:
-                    identity = pd.read_csv(z.open(z.namelist()[0]))
-                tx = tx.merge(identity, on="TransactionID", how="left")
-            return tx
-        except Exception:
-            pass
+def is_demo_source(label: str | None = None) -> bool:
+    """True when the dataset label denotes synthetic / demonstration records."""
+    text = str(dataset_source_label() if label is None else label).lower()
+    return "synthetic" in text or "demo" in text
 
-    # Fallback
-    return _make_synthetic()
+
+def _make_synthetic(n: int = 5000, seed: int = 42) -> pd.DataFrame:
+    """Compatibility shim for the legacy private helper.
+
+    Explicitly generates demo records; it is never used as an automatic
+    fallback by :func:`load_data`.
+    """
+    return make_demo_data(rows=n, seed=seed)
 
 
 def get_class_distribution(df: pd.DataFrame) -> dict:

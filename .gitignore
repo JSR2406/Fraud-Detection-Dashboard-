@@ -43,3 +43,17 @@ desktop.ini
 # Logs
 *.log
 logs/
+
+# Generated ML artifacts and reports
+artifacts/
+mlruns/
+monitoring/reports/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Local environment overrides
+.env.local
+*.db
+*.sqlite3

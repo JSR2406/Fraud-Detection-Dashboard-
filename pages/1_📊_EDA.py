@@ -13,15 +13,27 @@ import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
-from src.data_loader    import load_data
+from src.data_loader    import load_data, dataset_source_label, is_demo_source
 from src.visualizations import (
     transaction_amount_hist, hourly_fraud_rate,
     correlation_heatmap, class_distribution_pie,
+    fraud_vs_legit_amount_distribution, fraud_by_category,
+    fraud_by_relative_time, missing_values_bar,
 )
 from src.styles import inject_global_css, section_title, footer
+from fraud_ml.data.validation import quality_report
 
 st.set_page_config(page_title="EDA | Fraud Detection", page_icon="📊", layout="wide")
 inject_global_css()
+
+SOURCE_LABEL = dataset_source_label()
+if is_demo_source(SOURCE_LABEL):
+    st.warning(
+        "🚧 These charts describe **synthetic demo records**, not validated real-world fraud. "
+        "Treat every rate and correlation as illustrative only. Set `FRAUD_DATA_MODE=real` "
+        "to explore licensed data.",
+        icon="⚠️",
+    )
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
@@ -58,6 +70,14 @@ with st.expander("📋 Column info & data types"):
     })
     st.dataframe(info_df, use_container_width=True)
 
+with st.expander("✅ Platform quality report"):
+    quality = quality_report(df)
+    q_cols = st.columns(len(quality))
+    for col, (key, value) in zip(q_cols, quality.items()):
+        col.metric(key.replace("_", " ").title(),
+                   f"{value:,}" if isinstance(value, int) else f"{value:.4f}"
+                   if isinstance(value, float) else str(value))
+
 st.markdown("---")
 
 # ── Main tabs ─────────────────────────────────────────────────────────────────
@@ -70,6 +90,12 @@ tab1, tab2, tab3, tab4, tab5 = st.tabs([
 with tab1:
     section_title("Transaction Amount Distribution")
     st.plotly_chart(transaction_amount_hist(df), use_container_width=True)
+
+    section_title("Fraud vs Legitimate Amount Distributions")
+    amount_cap = st.number_input("Cap amount shown ($)", min_value=100, max_value=50000,
+                                 value=2000, step=100, key="eda_amount_cap")
+    st.plotly_chart(fraud_vs_legit_amount_distribution(df, cap=amount_cap),
+                    use_container_width=True)
 
     col_a, col_b = st.columns(2)
     with col_a:
@@ -114,7 +140,7 @@ with tab1:
 # ── Tab 2 : Time Patterns ─────────────────────────────────────────────────────
 with tab2:
     if "TransactionDT" not in df.columns:
-        st.info("TransactionDT not available in demo data.")
+        st.info("TransactionDT is not available in the loaded dataset.")
     else:
         df2 = df.copy()
         df2["hour"] = (df2["TransactionDT"] // 3600) % 24
@@ -162,6 +188,13 @@ with tab2:
         )
         st.plotly_chart(fig_heat, use_container_width=True)
 
+        section_title("Fraud Over Relative Time (TransactionDT)")
+        st.caption(
+            "TransactionDT is a timedelta from an undisclosed dataset origin, not a calendar "
+            "timestamp. The axis below is a relative day bucket and must not be read as a date."
+        )
+        st.plotly_chart(fraud_by_relative_time(df, bin_days=1), use_container_width=True)
+
 # ── Tab 3 : Categorical ───────────────────────────────────────────────────────
 with tab3:
     cat_cols = [c for c in ["ProductCD","card4","card6","P_emaildomain","DeviceType"] if c in df.columns]
@@ -197,6 +230,11 @@ with tab3:
         font=dict(color="#FAFAFA"), margin=dict(l=40,r=30,t=50,b=40),
     )
     st.plotly_chart(fig_stack, use_container_width=True)
+
+    # Dedicated ProductCD view (fraud rate + volume)
+    if "ProductCD" in df.columns:
+        section_title("Fraud by ProductCD")
+        st.plotly_chart(fraud_by_category(df, "ProductCD"), use_container_width=True)
 
     # Email domain analysis
     if chosen == "P_emaildomain" and "P_emaildomain" in df.columns:
@@ -256,6 +294,14 @@ with tab4:
 
 # ── Tab 5 : Advanced ─────────────────────────────────────────────────────────
 with tab5:
+    section_title("🧩 Missing-Value Analysis")
+    st.caption(
+        "Missingness can differ sharply between real and synthetic data. "
+        "Imputation and missing-indicator handling live in fraud_ml.features.pipeline."
+    )
+    top_missing = st.slider("Columns to show", 5, 30, 15, key="eda_missing_top")
+    st.plotly_chart(missing_values_bar(df, top_n=top_missing), use_container_width=True)
+
     section_title("🔬 Scatter Matrix (Top Numeric Features)")
     scatter_cols = top_corr.head(4).index.tolist() + ["isFraud"]
     scatter_cols = [c for c in scatter_cols if c in df.columns]

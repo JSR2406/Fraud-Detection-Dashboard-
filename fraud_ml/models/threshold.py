@@ -5,8 +5,15 @@ from sklearn.metrics import f1_score, precision_score
 def optimize_threshold(y_true, probability, strategy="max_f1", *, min_precision=.5, capacity=None, false_positive_cost=1., missed_fraud_cost=10.):
     y=np.asarray(y_true,dtype=int); p=np.asarray(probability,dtype=float)
     if len(y)==0 or len(y)!=len(p) or not np.isfinite(p).all(): raise ValueError("Threshold inputs must be valid and non-empty.")
+    # Candidate cutoffs must stay strictly inside (0, 1): a 0 or 1 threshold is
+    # a degenerate "flag everything / flag nothing" rule and is rejected by the
+    # persisted-artifact validator at inference time.
+    lower = float(np.nextafter(0.0, 1.0))
+    upper = float(np.nextafter(1.0, 0.0))
+    finite = p[np.isfinite(p)]
+    grid = np.unique(np.r_[lower, finite[(finite > lower) & (finite < upper)], upper])
     candidates=[]
-    for threshold in np.unique(np.r_[0.,p,1.]):
+    for threshold in grid:
         pred=p>=threshold; precision=precision_score(y,pred,zero_division=0); f1=f1_score(y,pred,zero_division=0)
         if strategy=="max_f1": objective=f1
         elif strategy=="min_precision":

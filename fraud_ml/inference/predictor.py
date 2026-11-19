@@ -1,6 +1,7 @@
 """Strict predictor for trusted persisted pipeline bundles."""
 from pathlib import Path
 import joblib
+import numpy as np
 import pandas as pd
 from fraud_ml.features.engineering import RAW_COLUMNS, engineer_features
 from fraud_ml.inference.schemas import classify_probability
@@ -15,6 +16,8 @@ class FraudPredictor:
         self.threshold = float(bundle["threshold"])
         self.model_version = str(bundle.get("artifact_version", "unknown"))
         self.feature_columns = bundle.get("feature_columns")
+        self.calibrator = bundle.get("calibrator")
+        self.calibration = bundle.get("calibration", {"method": "uncalibrated"})
         if not 0 < self.threshold < 1:
             raise ValueError("Stored model threshold must be between zero and one.")
 
@@ -46,6 +49,11 @@ class FraudPredictor:
         cutoff = self.threshold if threshold is None else float(threshold)
         if not 0 < cutoff < 1:
             raise ValueError("Threshold must be between zero and one.")
-        probabilities = self.pipeline.predict_proba(features)[:, 1]
+        probabilities = np.asarray(self.pipeline.predict_proba(features)[:, 1], dtype=float)
+        if self.calibrator is not None:
+            probabilities = np.asarray(self.calibrator.transform(probabilities), dtype=float)
+        if not np.isfinite(probabilities).all():
+            raise ValueError("Model produced non-finite fraud probabilities.")
+        probabilities = np.clip(probabilities, 0.0, 1.0)
         return [classify_probability(txid, float(prob), cutoff, self.model_version).__dict__
                 for txid, prob in zip(ids, probabilities)]
