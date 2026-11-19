@@ -104,7 +104,7 @@ calendar timestamp — derived hour/day features carry no calendar meaning.
 | `FRAUD_VALIDATION_FRACTION` | `0.15` | Chronological validation share (library setting) |
 | `FRAUD_API_HOST` / `FRAUD_API_PORT` | `0.0.0.0` / `8000` | `scripts/serve.py` only |
 | `FRAUD_CORS_ORIGINS` | localhost:3000/8501 | Comma-separated API CORS allowlist |
-| `FRAUD_MLFLOW_TRACKING_URI` | `file:./mlruns` | Used by the optional MLflow tracking helper |
+| `FRAUD_MLFLOW_TRACKING_URI` | `sqlite:///mlflow.db` | MLflow 3 database-backed tracking store (file stores are unsupported) |
 
 `configs/training.yaml` and `configs/api.yaml` document YAML-side defaults.
 Precedence differs slightly by CLI: `train.py` uses CLI flags > YAML > `FRAUD_*`
@@ -184,21 +184,36 @@ No secrets or external services are required.
 
 ---
 
-## 7. Optional integrations
+## 7. Optuna tuning and MLflow tracking
+
+`optuna` and `mlflow` are first-class dependencies in `requirements.txt` and
+`pyproject.toml`. The remaining extras are optional:
 
 ```bash
-python -m pip install -e ".[tuning,mlflow,shap,validation]"
+python -m pip install -e ".[shap,validation]"   # native SHAP / pandera
 ```
 
-Extras: `optuna` (tuning), `mlflow` (tracking/registry), `shap` (explanations),
-`pandera` (schema validation), plus `dev` (pytest/ruff). They are **not** in
-`requirements.txt`, keeping Docker/CI lean. Standalone helpers exist in
-`fraud_ml/models/` and `fraud_ml/mlops/`, with local fallbacks when a package is
-absent. `scripts/train.py` wires calibration, tracking, gated candidate
-registration and opt-in LightGBM tuning into the main training path, while
-reporting which optional backend was actually used. `artifacts/metrics.json`
-is the detailed model report; run records are written to MLflow when available
-and to `artifacts/ml_tracking/` otherwise.
+`configs/training.yaml` enables a 12-trial Optuna TPE search by default. Every
+trial evaluates **validation data only** (the final test partition stays sealed)
+and the study is persisted to `sqlite:///optuna.db` so trials survive restarts.
+Override it from the CLI:
+
+```bash
+python scripts/train.py --mode demo --tune --trials 12 --artifact-dir artifacts
+mlflow ui --backend-store-uri sqlite:///mlflow.db   # inspect runs/models locally
+```
+
+Each run logs validation/test metrics, configuration and Optuna best parameters
+to `sqlite:///mlflow.db`, uploads `candidate.joblib` + `metrics.json` +
+`tuning_study.json`, and logs the fitted sklearn pipeline as a model. Gate-passing
+candidates are registered in the MLflow Model Registry; `promote()` / `rollback()`
+mirror the local aliases to MLflow aliases. The sklearn model uses cloudpickle
+because MLflow 3's default skops serializer rejects sklearn's numpy dtypes —
+load only models you trained and trust. If MLflow is misconfigured or absent,
+training still succeeds and writes a labelled local JSON record to
+`artifacts/ml_tracking/`; if Optuna is absent, a bounded random search is used.
+Both fallbacks are reported explicitly in the CLI summary and never silently
+pretend to be the real backend.
 
 ---
 
@@ -211,7 +226,7 @@ and to `artifacts/ml_tracking/` otherwise.
 5. SHAP-style attributions explain model output, not causal reasons for fraud.
 6. `scripts/monitor.py` computes descriptive missing/fraud-rate/amount deltas against a baseline; it is **not** a statistical drift test, alerting system, or model-performance monitor.
 7. The Redis Compose service is infrastructure scaffolding; application code does not require it.
-8. No production secrets, TLS termination, orchestration manifests or external model registry are configured by this repository.
+8. No production secrets, TLS termination, orchestration manifests or external model registry are configured; MLflow/Optuna use local SQLite stores by default, which are for development only.
 9. Scoring is artifact-backed, but prediction history is session-only; confirm a trusted artifact is configured before relying on the UI operationally.
 
 See `docs/ENGINEERING_AUDIT.md` for the original remediation rationale and

@@ -23,7 +23,8 @@ class Settings:
     validation_fraction: float = float(os.getenv("FRAUD_VALIDATION_FRACTION", "0.15"))
     threshold_strategy: str = os.getenv("FRAUD_THRESHOLD_STRATEGY", "max_f1").lower()
     calibration_method: str = os.getenv("FRAUD_CALIBRATION_METHOD", "isotonic").lower()
-    mlflow_tracking_uri: str = os.getenv("FRAUD_MLFLOW_TRACKING_URI", "file:./mlruns")
+    # MLflow 3.x requires a database-backed store; a file store is deprecated.
+    mlflow_tracking_uri: str = os.getenv("FRAUD_MLFLOW_TRACKING_URI", "sqlite:///mlflow.db")
     cors_origins: tuple[str, ...] = _origins(os.getenv("FRAUD_CORS_ORIGINS", ""))
     api_url: str = os.getenv("FRAUD_API_URL", "http://localhost:8000")
 
