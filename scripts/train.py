@@ -103,7 +103,15 @@ def resolve_options(
     calibration_config = config.get("calibration") or {}
     tuning_config = config.get("tuning") or {}
     registry_config = config.get("registry") or {}
+    tracking_config = config.get("experiment_tracking") or {}
     default_artifact_dir = Path(settings.artifact_path).parent
+
+    tune_enabled = args.tune if args.tune is not None else bool(tuning_config.get("enabled", False))
+    trials = (
+        args.trials
+        if args.trials is not None
+        else int(tuning_config.get("trials", 12))
+    )
 
     return {
         "mode": args.mode or str(data_config.get("mode", settings.data_mode)),
@@ -115,9 +123,10 @@ def resolve_options(
         "threshold_config": dict(threshold_config),
         "threshold_strategy": str(threshold_config.get("strategy", settings.threshold_strategy)),
         "calibration_method": str(calibration_config.get("method", settings.calibration_method)),
-        "tune_trials": int(tuning_config.get("trials", 0))
-        if bool(tuning_config.get("enabled", False))
-        else 0,
+        "tune_trials": int(trials) if tune_enabled else 0,
+        "tuning_study_name": str(tuning_config.get("study_name", "fraud-lightgbm")),
+        "tuning_study_storage": tuning_config.get("storage"),
+        "mlflow_tracking_uri": args.tracking_uri or tracking_config.get("tracking_uri") or None,
         "register": bool(registry_config.get("register", True)),
     }
 
@@ -148,6 +157,9 @@ def run_training(options: Mapping[str, Any]) -> dict[str, Any]:
         tune_lightgbm_trials=int(options["tune_trials"]),
         calibration_method=options["calibration_method"],
         register=bool(options["register"]),
+        tuning_study_name=str(options["tuning_study_name"]),
+        tuning_study_storage=options["tuning_study_storage"],
+        mlflow_tracking_uri=options["mlflow_tracking_uri"],
     )
     metrics_path = Path(options["artifact_dir"]) / "metrics.json"
     report = json.loads(metrics_path.read_text(encoding="utf-8"))
@@ -159,6 +171,8 @@ def run_training(options: Mapping[str, Any]) -> dict[str, Any]:
         "artifact_path": result["artifact_path"],
         "metrics_path": str(metrics_path),
         "tracking_backend": result["tracking"]["backend"],
+        "mlflow_run_id": result["tracking"]["run_id"],
+        "tuning": result["tuning"],
         "gates": result["gates"],
         "report": report,
     }
@@ -202,6 +216,23 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=None,
         help="Directory for candidate.joblib and metrics.json (default: artifacts).",
+    )
+    parser.add_argument(
+        "--tune",
+        action="store_true",
+        default=None,
+        help="Enable Optuna LightGBM tuning (overrides configs/training.yaml).",
+    )
+    parser.add_argument(
+        "--trials",
+        type=int,
+        default=None,
+        help="Number of Optuna trials when tuning is enabled (default: config value).",
+    )
+    parser.add_argument(
+        "--tracking-uri",
+        default=None,
+        help="MLflow tracking URI, e.g. sqlite:///mlflow.db (overrides config/env).",
     )
     parser.add_argument(
         "--print-metrics",

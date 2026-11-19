@@ -39,6 +39,9 @@ def train_models(
     calibration_method: str = "isotonic",
     register: bool = True,
     experiment_name: str = "fraud-platform",
+    tuning_study_name: str = "fraud-lightgbm",
+    tuning_study_storage: str | None = None,
+    mlflow_tracking_uri: str | None = None,
 ) -> dict:
     """Train, select, calibrate and persist models using temporal partitions.
 
@@ -76,16 +79,25 @@ def train_models(
         ),
     }
     lightgbm_params: dict[str, Any] = {}
+    tuning_result: Any | None = None
     try:
         from lightgbm import LGBMClassifier
 
         if tune_lightgbm_trials > 0:
             from fraud_ml.models.tuning import tune_lightgbm
 
-            tuning = tune_lightgbm(
-                x_train, y_train, x_val, y_val, n_trials=tune_lightgbm_trials, seed=seed
+            tuning_result = tune_lightgbm(
+                x_train,
+                y_train,
+                x_val,
+                y_val,
+                n_trials=tune_lightgbm_trials,
+                seed=seed,
+                study_name=tuning_study_name,
+                study_storage=tuning_study_storage,
+                log_path=Path(artifact_dir) / "tuning_study.json",
             )
-            lightgbm_params = dict(tuning.best_params)
+            lightgbm_params = dict(tuning_result.best_params)
         lightgbm_params.setdefault("n_estimators", 350)
         lightgbm_params.setdefault("learning_rate", 0.05)
         lightgbm_params.setdefault("num_leaves", 31)
@@ -195,6 +207,9 @@ def train_models(
             "threshold_strategy": threshold_strategy,
             "calibration_method": calibration_method,
             "lightgbm_params": lightgbm_params,
+            "tuning_trials": tune_lightgbm_trials,
+            "tuning_backend": tuning_result.backend if tuning_result else "disabled",
+            "tuning_study_name": tuning_study_name if tune_lightgbm_trials > 0 else None,
         },
         "validation_metrics": best["validation"],
         "test_metrics": best["test"],
@@ -229,20 +244,21 @@ def train_models(
     metrics_path.write_text(json.dumps(report_payload, indent=2, default=str), encoding="utf-8")
 
     gate = evaluation_gates(best["validation"])
-    if register:
-        register_candidate(
-            artifact_path,
-            model_name=champion,
-            version="1.0.0",
-            validation_metrics=best["validation"],
-            gate=gate,
-            registry_dir=output / "registry",
-        )
-
+    tuning_artifact = output / "tuning_study.json"
     tracking = log_training_run(
         experiment=experiment_name,
         run_name=f"{champion}-{fingerprint[:8]}",
-        parameters=bundle["training_config"],
+        parameters={
+            **bundle["training_config"],
+            **(
+                {
+                    "optuna_best_score": tuning_result.best_score,
+                    "optuna_best_params": tuning_result.best_params,
+                }
+                if tuning_result is not None
+                else {}
+            ),
+        },
         metrics={
             "validation_average_precision": best["validation"]["average_precision"],
             "validation_roc_auc": best["validation"]["roc_auc"] or 0.0,
@@ -256,10 +272,32 @@ def train_models(
             "model_name": champion,
             "threshold_strategy": threshold_strategy,
             "calibration_method": calibration_method,
+            "tuning_backend": bundle["training_config"]["tuning_backend"],
         },
-        artifact_paths=[artifact_path, metrics_path],
+        artifact_paths=[artifact_path, metrics_path, tuning_artifact],
         output_dir=output / "ml_tracking",
+        model=best["pipeline"],
+        tracking_uri=mlflow_tracking_uri,
     )
+
+    if register:
+        register_candidate(
+            artifact_path,
+            model_name=champion,
+            version="1.0.0",
+            validation_metrics=best["validation"],
+            gate=gate,
+            registry_dir=output / "registry",
+            mlflow_run_id=tracking.run_id if tracking.backend == "mlflow" else None,
+            mlflow_model_name=f"fraud-{champion.lower().replace(' ', '-')}"
+            if tracking.backend == "mlflow"
+            else None,
+            mlflow_model_uri=(
+                f"models:/{tracking.details['logged_model_id']}"
+                if tracking.details.get("logged_model_id")
+                else None
+            ),
+        )
 
     return {
         "results": results,
@@ -270,4 +308,14 @@ def train_models(
         "code_revision": revision,
         "gates": gate.as_dict(),
         "tracking": tracking.as_dict(),
+        "tuning": (
+            {
+                "backend": tuning_result.backend,
+                "best_score": tuning_result.best_score,
+                "best_params": tuning_result.best_params,
+                "trials": len(tuning_result.trials),
+            }
+            if tuning_result is not None
+            else None
+        ),
     }

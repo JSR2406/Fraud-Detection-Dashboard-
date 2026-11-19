@@ -82,7 +82,7 @@ validation, real-data performance, or successful external deploys.
 - [x] `docker-compose.yml`: `api`, profile-gated `streamlit` and `redis`; `.env` optional; writable artifacts and read-only data mounts; healthchecks; `unless-stopped`.
 - [x] `.dockerignore`: excludes VCS/CI, secrets, caches and large data/artifacts.
 - [x] `pyproject.toml`: metadata, Python `>=3.11,<3.13`, mirrored dependencies, extras, pytest/ruff config.
-- [x] `requirements.txt`: original pins preserved; `fastapi`, `uvicorn`, `httpx`, `PyYAML` appended (httpx is needed by the API TestClient tests in CI).
+- [x] `requirements.txt`: original pins preserved; `fastapi`, `uvicorn`, `httpx`, `PyYAML`, `optuna`, `mlflow` appended (httpx is needed by the API TestClient tests in CI).
 - [ ] Docker image was not built in this workspace (no daemon used); validate in CI/deployment before release.
 
 ## Phase 10 — CI and documentation — ✅ Done
@@ -99,12 +99,13 @@ validation, real-data performance, or successful external deploys.
 
 | Command | Result |
 |---------|--------|
-| `python -m pytest tests/ -q` | PASS — **33 passed** |
+| `python -m pytest tests/ -q` | PASS — **37 passed** (includes 4 real Optuna/MLflow backend tests) |
 | `python scripts/train.py --help`, `python scripts/serve.py --help`, `python scripts/monitor.py --help` | PASS |
 | Functional train → monitor smoke run into a temp artifact dir; `serve.py --check` | PASS |
 | `python -m py_compile` on app/pages/src/API/fraud_ml/scripts/monitoring | PASS |
 | Streamlit `AppTest` on `app.py` and all six pages | PASS — zero exceptions |
 | YAML/TOML parsing of configs, compose and CI files | PASS |
+| `python scripts/train.py --mode demo --sample-rows 3000 --tune --trials 6` | PASS — Optuna backend, MLflow run + registered model, gates passed |
 
 ## Deliberately pending
 

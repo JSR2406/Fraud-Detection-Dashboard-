@@ -1,8 +1,13 @@
 """Experiment tracking with MLflow and a local JSON fallback.
 
-MLflow is optional: when unavailable, runs are still recorded locally with a
-dataset fingerprint, code revision, metrics and config so experiments remain
-auditable. The fallback is never described as an MLflow run.
+MLflow is optional at import time for the rest of the platform, but when it is
+installed this module records parameters, metrics, tags, artifacts and the
+fitted sklearn pipeline so runs are reproducible and registrable. Any MLflow
+store failure degrades to local JSON with an explicit reason instead of
+breaking training.
+
+MLflow 3.x requires a database-backed tracking store (for example
+``sqlite:///mlflow.db``); the legacy file store is intentionally not used.
 """
 from __future__ import annotations
 
@@ -14,6 +19,8 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
+
+from fraud_ml.config import settings
 
 
 @dataclass(frozen=True)
@@ -53,6 +60,50 @@ def code_revision() -> str:
         return os.getenv("FRAUD_CODE_REVISION", "unknown")
 
 
+def _scalar(value: Any) -> Any:
+    """MLflow params/tags accept scalars; JSON-encode nested structures."""
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    return json.dumps(value, default=str, sort_keys=True)
+
+
+def _local_fallback(
+    *,
+    experiment: str,
+    run_name: str,
+    parameters: dict[str, Any],
+    metrics: dict[str, float],
+    tags: dict[str, str],
+    artifact_paths: list[str | Path],
+    output_dir: str | Path,
+    reason: str,
+) -> TrackingResult:
+    output = Path(output_dir)
+    output.mkdir(parents=True, exist_ok=True)
+    run_id = hashlib.sha256(
+        f"{run_name}{json.dumps(parameters, sort_keys=True, default=str)}".encode("utf-8")
+    ).hexdigest()[:12]
+    payload = {
+        "backend": "local-json-fallback (mlflow unavailable or failed)",
+        "run_id": run_id,
+        "experiment": experiment,
+        "run_name": run_name,
+        "parameters": parameters,
+        "metrics": metrics,
+        "tags": tags,
+        "artifact_paths": [str(Path(path).name) for path in artifact_paths],
+        "fallback_reason": reason,
+    }
+    target = output / f"{run_id}.json"
+    target.write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
+    return TrackingResult(
+        backend="local-json-fallback",
+        run_id=run_id,
+        tracking_uri=str(output.resolve()),
+        details={"experiment": experiment, "path": str(target), "reason": reason},
+    )
+
+
 def log_training_run(
     *,
     experiment: str,
@@ -62,58 +113,79 @@ def log_training_run(
     tags: dict[str, str] | None = None,
     artifact_paths: list[str | Path] | None = None,
     output_dir: str | Path = "artifacts/ml_tracking",
+    model: Any | None = None,
+    tracking_uri: str | None = None,
 ) -> TrackingResult:
     """Log a training run to MLflow when installed, else to local JSON files."""
-    tags = dict(tags or {})
-    tags.setdefault("dataset_fingerprint", tags.get("dataset_fingerprint", "unknown"))
+    tags = {key: str(value) for key, value in (tags or {}).items()}
+    tags.setdefault("dataset_fingerprint", "unknown")
     tags.setdefault("code_revision", code_revision())
+    artifacts = list(artifact_paths or [])
+    uri = tracking_uri or settings.mlflow_tracking_uri
 
     try:
+        os.environ.setdefault("MLFLOW_DISABLE_AGENT_HINT", "1")
         import mlflow  # type: ignore
+        import mlflow.sklearn  # type: ignore
 
-        tracking_uri = os.getenv("FRAUD_MLFLOW_TRACKING_URI", "file:./mlruns")
-        mlflow.set_tracking_uri(tracking_uri)
+        mlflow.set_tracking_uri(uri)
         mlflow.set_experiment(experiment)
         with mlflow.start_run(run_name=run_name) as active:
-            for key, value in parameters.items():
-                mlflow.log_param(key, value)
-            for key, value in metrics.items():
-                if isinstance(value, (int, float)) and not isinstance(value, bool):
-                    mlflow.log_metric(key, float(value))
+            mlflow.log_params({key: _scalar(value) for key, value in parameters.items()})
+            mlflow.log_metrics(
+                {
+                    key: float(value)
+                    for key, value in metrics.items()
+                    if isinstance(value, (int, float)) and not isinstance(value, bool)
+                }
+            )
             mlflow.set_tags(tags)
-            for artifact in artifact_paths or []:
+            for artifact in artifacts:
                 path = Path(artifact)
                 if path.exists():
                     mlflow.log_artifact(str(path))
+            if model is not None:
+                # MLflow 3 defaults to skops, which rejects numpy dtypes used by
+                # sklearn ColumnTransformers. The model is our own trained object
+                # (never untrusted input), so cloudpickle is the compatible format.
+                try:
+                    mlflow.sklearn.log_model(
+                        sk_model=model, name="model", serialization_format="cloudpickle"
+                    )
+                except TypeError:  # MLflow < 3 compatibility
+                    mlflow.sklearn.log_model(
+                        sk_model=model, artifact_path="model", serialization_format="cloudpickle"
+                    )
+
+        logged_model_id = None
+        try:  # MLflow 3 tracks logged models separately from run artifacts
+            logged_model_id = getattr(mlflow.last_logged_model(), "model_id", None)
+        except Exception:
+            pass
+
         return TrackingResult(
             backend="mlflow",
             run_id=str(active.info.run_id),
-            tracking_uri=tracking_uri,
-            details={"experiment": experiment, "tags": tags},
+            tracking_uri=uri,
+            details={
+                "experiment": experiment,
+                "tags": tags,
+                "model_logged": model is not None,
+                "logged_model_id": logged_model_id,
+            },
         )
     except ImportError:
-        pass
+        reason = "mlflow is not installed"
+    except Exception as exc:  # store/network configuration errors must not break training
+        reason = f"{type(exc).__name__}: {exc}"
 
-    output = Path(output_dir)
-    output.mkdir(parents=True, exist_ok=True)
-    run_id = hashlib.sha256(
-        f"{run_name}{json.dumps(parameters, sort_keys=True, default=str)}".encode("utf-8")
-    ).hexdigest()[:12]
-    payload = {
-        "backend": "local-json-fallback (mlflow not installed)",
-        "run_id": run_id,
-        "experiment": experiment,
-        "run_name": run_name,
-        "parameters": parameters,
-        "metrics": metrics,
-        "tags": tags,
-        "artifact_paths": [str(Path(path).name) for path in artifact_paths or []],
-    }
-    target = output / f"{run_id}.json"
-    target.write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
-    return TrackingResult(
-        backend="local-json-fallback",
-        run_id=run_id,
-        tracking_uri=str(output.resolve()),
-        details={"experiment": experiment, "path": str(target)},
+    return _local_fallback(
+        experiment=experiment,
+        run_name=run_name,
+        parameters=parameters,
+        metrics=metrics,
+        tags=tags,
+        artifact_paths=artifacts,
+        output_dir=output_dir,
+        reason=reason,
     )

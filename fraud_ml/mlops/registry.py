@@ -11,6 +11,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
+from fraud_ml.config import settings
 from fraud_ml.inference.predictor import FraudPredictor
 
 
@@ -64,6 +65,34 @@ def _write_registry(registry_dir: str | Path, data: dict[str, Any]) -> Path:
     return path
 
 
+def _mlflow_client() -> tuple[Any | None, Any | None]:
+    """Return a configured MLflow client and module, or (None, None) if unavailable."""
+    try:
+        import mlflow  # type: ignore
+        from mlflow.tracking import MlflowClient  # type: ignore
+
+        mlflow.set_tracking_uri(settings.mlflow_tracking_uri)
+        return MlflowClient(), mlflow
+    except Exception:
+        return None, None
+
+
+def _set_mlflow_alias(record: dict[str, Any], alias: str, version: str) -> str | None:
+    """Mirror a local alias to the MLflow registry when a version exists."""
+    name = record.get("mlflow_model_name")
+    mlflow_version = record.get("mlflow_version")
+    if not name or not mlflow_version:
+        return None
+    client, _ = _mlflow_client()
+    if client is None:
+        return None
+    try:
+        client.set_registered_model_alias(name, alias, str(mlflow_version))
+        return None
+    except Exception as exc:
+        return f"{type(exc).__name__}: {exc}"
+
+
 def register_candidate(
     artifact_path: str | Path,
     *,
@@ -72,8 +101,11 @@ def register_candidate(
     validation_metrics: dict[str, Any],
     gate: GateResult | None = None,
     registry_dir: str | Path = "artifacts/registry",
+    mlflow_run_id: str | None = None,
+    mlflow_model_name: str | None = None,
+    mlflow_model_uri: str | None = None,
 ) -> dict[str, Any]:
-    """Validate a trusted artifact and register it as a candidate version."""
+    """Validate a trusted artifact and register it locally and in MLflow."""
     artifact = Path(artifact_path).resolve()
     if not artifact.is_file():
         raise FileNotFoundError(f"Model artifact not found: {artifact}")
@@ -90,6 +122,38 @@ def register_candidate(
         "gates": gate.as_dict(),
         "status": "candidate" if gate.passed else "rejected",
     }
+    if mlflow_run_id and mlflow_model_name:
+        client, mlflow = _mlflow_client()
+        if client is not None and mlflow is not None:
+            try:
+                model_version = mlflow.register_model(
+                    model_uri=mlflow_model_uri or f"runs:/{mlflow_run_id}/model",
+                    name=mlflow_model_name,
+                    await_registration_for=0,
+                )
+                record["mlflow_model_name"] = mlflow_model_name
+                record["mlflow_version"] = str(model_version.version)
+                client.set_model_version_tag(
+                    mlflow_model_name,
+                    str(model_version.version),
+                    "validation_average_precision",
+                    str(validation_metrics.get("average_precision", "unknown")),
+                )
+                client.set_model_version_tag(
+                    mlflow_model_name,
+                    str(model_version.version),
+                    "gate_passed",
+                    str(gate.passed),
+                )
+                client.set_model_version_tag(
+                    mlflow_model_name,
+                    str(model_version.version),
+                    "dataset_fingerprint",
+                    str(validation_metrics.get("dataset_fingerprint", "unknown")),
+                )
+            except Exception as exc:
+                record["mlflow_registration_error"] = f"{type(exc).__name__}: {exc}"
+
     registry["versions"][str(version)] = record
     registry.setdefault("history", []).append(
         {"action": "register", "version": str(version), "status": record["status"]}
@@ -113,7 +177,15 @@ def promote(version: str, *, alias: str = "champion", registry_dir: str | Path =
     )
     record["status"] = "active"
     _write_registry(registry_dir, registry)
-    return {"alias": alias, "version": str(version), "previous": previous}
+    mlflow_error = _set_mlflow_alias(record, alias, record.get("mlflow_version", ""))
+    return {
+        "alias": alias,
+        "version": str(version),
+        "previous": previous,
+        "mlflow_model": record.get("mlflow_model_name"),
+        "mlflow_version": record.get("mlflow_version"),
+        "mlflow_alias_error": mlflow_error,
+    }
 
 
 def rollback(*, alias: str = "champion", registry_dir: str | Path = "artifacts/registry") -> dict[str, Any]:
@@ -127,13 +199,22 @@ def rollback(*, alias: str = "champion", registry_dir: str | Path = "artifacts/r
     if len(promotions) < 2:
         raise ValueError("No earlier version is available for rollback.")
     target = promotions[-2]["version"]
+    target_record = registry.get("versions", {}).get(target, {})
     current = registry.get("aliases", {}).get(alias)
     registry.setdefault("aliases", {})[alias] = target
     registry.setdefault("history", []).append(
         {"action": "rollback", "alias": alias, "version": target, "previous": current}
     )
     _write_registry(registry_dir, registry)
-    return {"alias": alias, "version": target, "previous": current}
+    mlflow_error = _set_mlflow_alias(target_record, alias, target_record.get("mlflow_version", ""))
+    return {
+        "alias": alias,
+        "version": target,
+        "previous": current,
+        "mlflow_model": target_record.get("mlflow_model_name"),
+        "mlflow_version": target_record.get("mlflow_version"),
+        "mlflow_alias_error": mlflow_error,
+    }
 
 
 def load_alias(*, alias: str = "champion", registry_dir: str | Path = "artifacts/registry") -> FraudPredictor:

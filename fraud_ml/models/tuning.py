@@ -76,6 +76,8 @@ def tune_lightgbm(
     timeout: int | None = None,
     early_stopping_rounds: int = 30,
     log_path: str | Path | None = None,
+    study_name: str = "fraud-lightgbm",
+    study_storage: str | None = None,
 ) -> TuningResult:
     """Optimize LightGBM on the validation partition only."""
     try:
@@ -123,8 +125,16 @@ def tune_lightgbm(
         import optuna  # type: ignore
 
         optuna.logging.set_verbosity(optuna.logging.WARNING)
-        sampler = optuna.samplers.TPESampler(seed=seed)
-        study = optuna.create_study(direction="maximize", sampler=sampler)
+        study_kwargs: dict[str, Any] = {
+            "study_name": study_name,
+            "direction": "maximize",
+            "sampler": optuna.samplers.TPESampler(seed=seed),
+        }
+        if study_storage:
+            # SQLite storage keeps studies across runs and makes trials auditable.
+            study_kwargs["storage"] = study_storage
+            study_kwargs["load_if_exists"] = True
+        study = optuna.create_study(**study_kwargs)
         study.optimize(
             lambda trial: evaluate(_parameter_space(trial)),
             n_trials=n_trials,

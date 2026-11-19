@@ -41,14 +41,16 @@ calibration:
   method: isotonic          # isotonic | sigmoid | none; fit on validation only
 
 tuning:
-  enabled: false            # opt-in; requires the optional `tuning` extra
+  enabled: true             # Optuna TPE search; falls back to bounded random search if absent
   backend: optuna
-  trials: 20                # passed to tune_lightgbm() when enabled
+  trials: 12                # validation-only Objective; never touches the final test set
+  study_name: fraud-lightgbm
+  storage: sqlite:///optuna.db   # persistent study; remove for in-memory studies
 
 experiment_tracking:
   enabled: true             # log_training_run() always records; MLflow used if installed
   backend: mlflow
-  tracking_uri: null        # null = file:./mlruns when MLflow is installed
+  tracking_uri: sqlite:///mlflow.db  # MLflow 3 requires a database-backed store
 
 registry:
   register: true            # candidate registration + validation gates (no auto-promotion)
