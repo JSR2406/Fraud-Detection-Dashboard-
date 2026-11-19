@@ -1,0 +1,87 @@
+"""Smoke/regression tests for the dashboard's existing data and ML modules."""
+
+import numpy as np
+import pandas as pd
+import pytest
+
+from src.data_loader import _make_synthetic, get_class_distribution
+from src.model_trainer import train_all
+from src.preprocessing import engineer_features, preprocess
+
+
+def test_synthetic_data_is_reproducible_and_has_expected_schema():
+    first = _make_synthetic(n=800, seed=7)
+    second = _make_synthetic(n=800, seed=7)
+
+    pd.testing.assert_frame_equal(first, second)
+    assert len(first) == 800
+    assert {"TransactionID", "TransactionDT", "TransactionAmt", "isFraud"}.issubset(first.columns)
+    assert set(first["isFraud"].unique()) == {0, 1}
+    assert first["TransactionID"].is_unique
+    assert (first["TransactionAmt"] >= 0).all()
+
+
+def test_class_distribution_counts_both_classes():
+    data = pd.DataFrame({"isFraud": [0, 0, 1, 0, 1]})
+    assert get_class_distribution(data) == {"Legitimate": 3, "Fraud": 2}
+
+
+def test_feature_engineering_adds_time_and_amount_features():
+    data = pd.DataFrame({"TransactionDT": [0, 3600, 23 * 3600], "TransactionAmt": [0.0, 10.0, 2.5]})
+
+    result = engineer_features(data)
+
+    assert result["hour"].tolist() == [0, 1, 23]
+    assert result["is_night"].tolist() == [1, 0, 1]
+    assert result["log_amt"].iloc[1] == pytest.approx(np.log1p(10.0))
+    assert result["amt_decimal"].iloc[2] == pytest.approx(0.5)
+    # Feature engineering must not mutate the caller's frame.
+    assert "hour" not in data.columns
+
+
+def test_preprocessing_fits_and_reuses_encoders_with_unseen_categories():
+    data = _make_synthetic(n=800, seed=21)
+    x_train, y_train, encoders, columns = preprocess(data, fit=True)
+
+    assert x_train.shape == (800, len(columns))
+    assert y_train.shape == (800,)
+    assert np.isfinite(x_train).all()
+
+    inference = data.drop(columns=["isFraud"]).iloc[:3].copy()
+    inference.loc[inference.index[0], "card4"] = "new-card-type"
+    x_inference, y_inference, _, inference_columns = preprocess(inference, fit=False, encoders=encoders)
+    assert inference_columns == columns
+    assert x_inference.shape == (3, len(columns))
+    assert y_inference is None
+    assert np.isfinite(x_inference).all()
+
+
+def test_logistic_training_smoke_returns_metrics_and_artifact():
+    data = _make_synthetic(n=1000, seed=42)
+    x, y, _, feature_names = preprocess(data, fit=True)
+
+    results, x_test, y_test = train_all(
+        x,
+        y,
+        feature_names,
+        use_lgb=False,
+        use_rf=False,
+        use_lr=True,
+    )
+
+    assert list(results) == ["Logistic Regression"]
+    result = results["Logistic Regression"]
+    assert result["model"] is not None
+    assert result["scaler"] is not None
+    assert x_test.shape[0] == y_test.shape[0]
+    assert 0.0 <= result["metrics"]["roc_auc"] <= 1.0
+    assert 0.0 <= result["metrics"]["avg_prec"] <= 1.0
+    assert "confusion_matrix" in result["metrics"]
+
+
+def test_training_rejects_no_selected_models():
+    data = _make_synthetic(n=200, seed=9)
+    x, y, _, feature_names = preprocess(data, fit=True)
+
+    with pytest.raises(ValueError, match="No models selected"):
+        train_all(x, y, feature_names, use_lgb=False, use_rf=False, use_lr=False)
