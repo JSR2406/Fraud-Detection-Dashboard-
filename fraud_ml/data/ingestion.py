@@ -16,7 +16,7 @@ def _read(path: Path, nrows: int | None = None) -> pd.DataFrame:
             if len(names) != 1: raise ValueError(f"Expected exactly one CSV in {path}.")
             with archive.open(names[0]) as stream: return pd.read_csv(stream, nrows=nrows)
     return pd.read_csv(path, compression="infer", nrows=nrows)
-def load_ieee_cis(data_dir: str | Path, sample_rows: int | None = None) -> pd.DataFrame:
+def load_ieee_cis(data_dir: str | Path, sample_rows: int | None = None, *, use_pandera: bool = False) -> pd.DataFrame:
     root = Path(data_dir); tx_path = next((p for p in (root/"train_transaction.csv",root/"train_transaction.csv.zip") if p.is_file()),None)
     if tx_path is None: raise FileNotFoundError(f"IEEE-CIS transaction file not found under {root}.")
     tx = _read(tx_path, sample_rows); id_path = next((p for p in (root/"train_identity.csv",root/"train_identity.csv.zip") if p.is_file()),None)
@@ -24,8 +24,11 @@ def load_ieee_cis(data_dir: str | Path, sample_rows: int | None = None) -> pd.Da
         identity = _read(id_path)
         if "TransactionID" not in identity or identity.TransactionID.duplicated().any(): raise ValueError("Identity TransactionID must be unique.")
         tx = tx.merge(identity,on="TransactionID",how="left",validate="one_to_one")
-    validate_dataset(tx); return tx
-def load_dataset(mode: str, data_dir: str | Path = "data", seed: int = 42, sample_rows: int | None = None) -> tuple[pd.DataFrame,str]:
-    if mode == "real": return load_ieee_cis(data_dir,sample_rows), "real"
-    if mode == "demo": return make_demo_data(sample_rows or 5000,seed), "demo — synthetic demonstration only"
+    validate_dataset(tx, use_pandera=use_pandera); return tx
+def load_dataset(mode: str, data_dir: str | Path = "data", seed: int = 42, sample_rows: int | None = None, *, use_pandera: bool = False) -> tuple[pd.DataFrame,str]:
+    if mode == "real": return load_ieee_cis(data_dir,sample_rows,use_pandera=use_pandera), "real"
+    if mode == "demo":
+        frame = make_demo_data(sample_rows or 5000,seed)
+        validate_dataset(frame, use_pandera=use_pandera)
+        return frame, "demo — synthetic demonstration only"
     raise ValueError("mode must be explicitly real or demo")

@@ -78,13 +78,16 @@ def optional_integration_notes(config: Mapping[str, Any], options: Mapping[str, 
         except ImportError:
             notes.append("mlflow: NOT INSTALLED - local JSON tracking fallback used")
 
-    if bool((config.get("validation") or {}).get("pandera", False)):
-        try:
-            import pandera  # noqa: F401
-
-            notes.append("pandera: installed but not enforced; fraud_ml validation always runs")
-        except ImportError:
-            notes.append("pandera: NOT INSTALLED - built-in fraud_ml validation used")
+    if bool((config.get("validation") or {}).get("pandera", False)) or options.get(
+        "use_pandera", False
+    ):
+        installed, detail = pandera_available()
+        if options.get("use_pandera", False) and installed:
+            notes.append(f"pandera: schema enforced on the loaded dataset (v{detail})")
+        elif not installed:
+            notes.append(f"pandera: NOT INSTALLED - built-in validation used ({detail})")
+        else:
+            notes.append("pandera: disabled; built-in fraud_ml validation used")
 
     notes.append(
         f"calibration: {options['calibration_method']} fitted on validation; "
