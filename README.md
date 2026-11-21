@@ -1,4 +1,4 @@
-# Fraud Detection Dashboard — ML platform scaffolding
+# Fraud Detection Dashboard
 
 > Streamlit dashboard + FastAPI scoring service + leakage-aware ML pipeline + local
 > monitoring, with Docker and CI scaffolding.
@@ -11,6 +11,16 @@ No real-world fraud-performance number is asserted in this README — inspect
 Author: Janmejay Singh Rathore · Python 3.11 · License: MIT
 
 ---
+
+## Start here
+
+| Goal | Entry point |
+| --- | --- |
+| Explore the synthetic transaction dashboard | [app.py](app.py) |
+| Train a model and write evaluation artifacts | [scripts/train.py](scripts/train.py) |
+| Inspect the scoring API | [api/main.py](api/main.py) |
+| Review the ML pipeline | [fraud_ml](fraud_ml) |
+| Reproduce the end-to-end checks | [tests](tests) |
 
 ## 1. What is here
 
